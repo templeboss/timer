@@ -1,0 +1,45 @@
+name: timer_app
+description: A multi-timer app for Windows and Android
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  provider: ^6.0.5
+  audioplayers: ^6.0.0
+  file_picker: ^8.0.0
+  shared_preferences: ^2.3.0
+  window_manager: ^0.4.0
+  flutter_colorpicker: ^1.1.0
+  mqtt_client: ^10.11.9
+
+dependency_overrides:
+  flutter_colorpicker:
+    path: packages/flutter_colorpicker
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  image_path: "hourglass.ico"
+  android: true
+  ios: false
+  windows:
+    generate: true
+    image_path: "hourglass.ico"
+    icon_size: 72
+
+flutter:
+  uses-material-design: true
+  assets:
+    - default.wav
