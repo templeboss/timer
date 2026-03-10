@@ -52,3 +52,5 @@ app.*.map.json
 .metadata
 
 CLAUDE.md
+
+*.zip
