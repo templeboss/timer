@@ -13,6 +13,31 @@ A multi-device countdown timer app for **Android** and **Windows** with real-tim
 
 ---
 
+## Requirements
+
+- **Flutter** >= 3.10.0 / **Dart** >= 3.0.0
+- **Android** — Android Studio with Android SDK (API 21+)
+- **Windows** — Visual Studio 2022 with the **Desktop development with C++** workload
+
+## Building
+
+```bash
+# Install dependencies
+flutter pub get
+
+# Run in debug mode
+flutter run -d android   # or -d windows
+
+# Release builds
+flutter build apk --release          # Android APK
+flutter build appbundle --release    # Android App Bundle
+flutter build windows --release      # Windows executable
+```
+
+The Windows release output is at `build\windows\x64\runner\Release\`.
+
+---
+
 ## Screenshots
 
 | Main interface | Timer settings | Sync — connect | Sync — connected |
