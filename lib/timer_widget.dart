@@ -504,7 +504,7 @@ class _NameDialogState extends State<_NameDialog> {
 
   void _submit() {
     final v = widget.controller.text.trim();
-    widget.onSave(v.isEmpty ? 'Timer' : v, _hsv.toColor().value);
+    widget.onSave(v.isEmpty ? 'Timer' : v, _hsv.toColor().toARGB32());
   }
 
   @override

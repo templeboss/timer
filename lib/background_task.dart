@@ -51,7 +51,7 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
   }
 
   @override
-  Future<void> onDestroy(DateTime timestamp) async {
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
     for (final t in _countdowns.values) {
       t.cancel();
     }
