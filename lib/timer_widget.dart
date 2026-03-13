@@ -628,13 +628,9 @@ class _DurationDialogState extends State<_DurationDialog> {
   }
 
   void _save() {
-    final h = int.tryParse(_hCtrl.text) ?? 0;
-    final m = int.tryParse(_mCtrl.text) ?? 0; // total minutes, converted automatically
-    final s = int.tryParse(_sCtrl.text) ?? 0;
-    if (s >= 60) {
-      setState(() => _error = 'Seconds must be 0–59');
-      return;
-    }
+    final h = (int.tryParse(_hCtrl.text) ?? 0).clamp(0, 99);
+    final m = (int.tryParse(_mCtrl.text) ?? 0).clamp(0, 59);
+    final s = (int.tryParse(_sCtrl.text) ?? 0).clamp(0, 59);
     final totalSeconds = h * 3600 + m * 60 + s;
     if (totalSeconds == 0) {
       setState(() => _error = 'Duration must be greater than zero');
@@ -737,7 +733,7 @@ class _DurationDialogState extends State<_DurationDialog> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              _field(_hCtrl, 'HH', min: 0),
+              _field(_hCtrl, 'HH', min: 0, max: 99),
               Padding(
                 padding: const EdgeInsets.only(bottom: 26),
                 child: Text(':',
@@ -746,7 +742,7 @@ class _DurationDialogState extends State<_DurationDialog> {
                         color: Colors.white.withValues(alpha: 0.25),
                         fontFamily: 'monospace')),
               ),
-              _field(_mCtrl, 'MM', autofocus: true, maxLength: 3, min: 0, max: 240),
+              _field(_mCtrl, 'MM', autofocus: true, min: 0, max: 59),
               Padding(
                 padding: const EdgeInsets.only(bottom: 26),
                 child: Text(':',
