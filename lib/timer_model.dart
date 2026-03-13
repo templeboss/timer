@@ -37,6 +37,9 @@ class TimerData {
   final bool isRunning;
   final bool wasElapsed;
   final DateTime? lastTick;
+  // In-memory only — incremented on every remote apply so stale local
+  // ticker updates (which carry the old version) are silently dropped.
+  final int localVersion;
 
   const TimerData({
     required this.id,
@@ -47,6 +50,7 @@ class TimerData {
     this.isRunning = false,
     this.wasElapsed = false,
     this.lastTick,
+    this.localVersion = 0,
   });
 
   bool get hasTarget => target > Duration.zero;
@@ -100,6 +104,8 @@ class TimerData {
     bool? isRunning,
     bool? wasElapsed,
     DateTime? lastTick,
+    bool clearLastTick = false,
+    int? localVersion,
   }) {
     return TimerData(
       id: id ?? this.id,
@@ -109,39 +115,27 @@ class TimerData {
       remaining: remaining ?? this.remaining,
       isRunning: isRunning ?? this.isRunning,
       wasElapsed: wasElapsed ?? this.wasElapsed,
-      lastTick: lastTick ?? this.lastTick,
+      lastTick: clearLastTick ? null : (lastTick ?? this.lastTick),
+      localVersion: localVersion ?? this.localVersion,
     );
   }
 
-  TimerData reset() => TimerData(
-        id: id,
-        name: name,
-        colorValue: colorValue,
-        target: target,
+  TimerData reset() => copyWith(
         remaining: target,
         isRunning: false,
         wasElapsed: false,
+        clearLastTick: true,
       );
 
-  TimerData withTarget(Duration newTarget) => TimerData(
-        id: id,
-        name: name,
-        colorValue: colorValue,
+  TimerData withTarget(Duration newTarget) => copyWith(
         target: newTarget,
         remaining: newTarget,
         isRunning: false,
         wasElapsed: false,
+        clearLastTick: true,
       );
 
-  TimerData stopped() => TimerData(
-        id: id,
-        name: name,
-        colorValue: colorValue,
-        target: target,
-        remaining: remaining,
-        isRunning: false,
-        wasElapsed: wasElapsed,
-      );
+  TimerData stopped() => copyWith(isRunning: false);
 }
 
 // ── SoundService ──────────────────────────────────────────────────────────────
@@ -235,7 +229,10 @@ class TimerModel extends ChangeNotifier {
   void setMqtt(MqttService mqtt) {
     _mqtt = mqtt;
     mqtt.onStateReceived = applyRemoteState;
-    mqtt.onReconnected = () => mqtt.publishState(_timers);
+    // onReconnected is intentionally not set: the broker's retained message
+    // delivers the correct state to reconnecting clients automatically.
+    // Publishing local state on reconnect would race with that delivery and
+    // could overwrite a reset applied by the other device while offline.
   }
 
   Future<void> load() async {
@@ -284,6 +281,10 @@ class TimerModel extends ChangeNotifier {
 
   void updateTimer(int index, TimerData updated) {
     final old = _timers[index];
+    // Drop stale local updates: if a remote apply has incremented localVersion
+    // since the caller's snapshot was taken, discard the update to avoid
+    // overwriting the remote state (e.g. a background ticker firing after reset).
+    if (updated.localVersion < old.localVersion) return;
     _timers[index] = updated;
     notifyListeners();
     _save();
@@ -330,9 +331,17 @@ class TimerModel extends ChangeNotifier {
       }
     }
 
+    // Carry forward localVersion (incremented) so any in-flight local ticker
+    // updates that captured a lower version are silently dropped in updateTimer.
+    final withVersions = incoming.map((remote) {
+      final existingIdx = _timers.indexWhere((t) => t.id == remote.id);
+      final prevVersion = existingIdx >= 0 ? _timers[existingIdx].localVersion : 0;
+      return remote.copyWith(localVersion: prevVersion + 1);
+    }).toList();
+
     _timers
       ..clear()
-      ..addAll(incoming);
+      ..addAll(withVersions);
     _counter = _timers.fold(0, (max, t) {
       final n = int.tryParse(t.id.replaceFirst('timer_', '')) ?? 0;
       return n > max ? n : max;
