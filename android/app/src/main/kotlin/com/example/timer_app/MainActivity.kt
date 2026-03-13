@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.pravera.flutter_foreground_task.FlutterForegroundTaskPlugin
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
@@ -26,6 +27,12 @@ class MainActivity : FlutterActivity() {
 
         // Cache engine so DismissAlarmReceiver can reach it
         FlutterEngineCache.getInstance().put(ENGINE_ID, flutterEngine)
+
+        // Register timer/notifications on the background engine too so the
+        // background Dart task can call AlarmNotificationHelper directly.
+        FlutterForegroundTaskPlugin.addTaskLifecycleListener(
+            TimerBackgroundEngineListener(applicationContext)
+        )
 
         // Create notification channel
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

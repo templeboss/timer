@@ -3,6 +3,7 @@ package com.example.timer_app
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.pravera.flutter_foreground_task.service.ForegroundService
 
 class DismissAlarmReceiver : BroadcastReceiver() {
 
@@ -13,10 +14,12 @@ class DismissAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != AlarmNotificationHelper.ACTION_DISMISS) return
 
-        // Cancel the notification
         AlarmNotificationHelper.cancel(context)
 
-        // Notify Flutter (if engine is alive)
+        // Notify the main Flutter engine (if alive)
         onDismiss?.invoke()
+
+        // Notify the background task (if running) so it stops the sound
+        ForegroundService.sendData("dismiss")
     }
 }

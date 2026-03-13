@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'background_task.dart';
 import 'mqtt_service.dart';
 import 'notification_service.dart';
 import 'timer_model.dart';
@@ -30,6 +32,24 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (isDesktop) await windowManager.ensureInitialized();
 
+  // Keep the app alive in the background on Android so MQTT stays connected
+  // and alarms can fire even when the phone is locked.
+  FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'timer_bg_v2',
+      channelName: 'Timer Background Service',
+      channelImportance: NotificationChannelImportance.MIN,
+      priority: NotificationPriority.MIN,
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(),
+    foregroundTaskOptions: ForegroundTaskOptions(
+      eventAction: ForegroundTaskEventAction.nothing(),
+      autoRunOnBoot: false,
+      allowWakeLock: true,
+      allowWifiLock: true,
+    ),
+  );
+
   final model = TimerModel();
   await model.load();
 
@@ -40,6 +60,7 @@ void main() async {
 
   model.setMqtt(mqtt);
   model.onRemoteAlarm = (timerId) {
+    if (sound.isPlaying) return; // already playing (e.g. background handover)
     final name = model.timers.firstWhere((t) => t.id == timerId,
         orElse: () => model.timers.first).name;
     sound.play();
@@ -58,6 +79,20 @@ void main() async {
     model.dismissAllElapsed();
     notifications.cancelAlarm();
   };
+
+  // Start the foreground service when MQTT connects; stop on explicit disconnect.
+  mqtt.addListener(() {
+    if (mqtt.connected) {
+      FlutterForegroundTask.startService(
+        serviceId: 256,
+        notificationTitle: 'Timer',
+        notificationText: 'Running in background',
+        callback: startBackgroundTask,
+      );
+    } else if (mqtt.roomCode.isEmpty) {
+      FlutterForegroundTask.stopService();
+    }
+  });
 
   runApp(TimerApp(model: model, sound: sound, mqtt: mqtt, notifications: notifications));
 
@@ -130,8 +165,61 @@ class TimerApp extends StatelessWidget {
 
 // ── Home page ──────────────────────────────────────────────────────────────────
 
-class _HomePage extends StatelessWidget {
+class _HomePage extends StatefulWidget {
   const _HomePage();
+
+  @override
+  State<_HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<_HomePage> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    FlutterForegroundTask.removeTaskDataCallback(_onTaskData);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      // Tell the background task the app is backgrounded and share current
+      // wasElapsed state so it doesn't re-fire alarms that already fired.
+      final model = context.read<TimerModel>();
+      final wasElapsed = {for (final t in model.timers) t.id: t.wasElapsed};
+      FlutterForegroundTask.sendDataToTask(
+          <String, dynamic>{'event': 'background', 'state': wasElapsed});
+    } else if (state == AppLifecycleState.resumed) {
+      FlutterForegroundTask.sendDataToTask(
+          <String, dynamic>{'event': 'foreground'});
+    }
+  }
+
+  void _onTaskData(Object data) {
+    if (!mounted || data is! Map) return;
+    final event = data['event'] as String?;
+
+    if (event == 'handover_alarm') {
+      // Background task was ringing; take over in the foreground.
+      final name = data['name'] as String?;
+      final sound = context.read<SoundService>();
+      if (!sound.isPlaying) sound.play();
+      if (name != null) context.read<NotificationService>().showAlarm(name);
+    } else if (event == 'dismissed') {
+      // User dismissed from the background service notification.
+      context.read<SoundService>().stop();
+      context.read<NotificationService>().cancelAlarm();
+      // Update local state immediately; MQTT will also sync it shortly.
+      context.read<TimerModel>().dismissAllElapsed();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
