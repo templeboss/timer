@@ -169,6 +169,15 @@ class SoundService extends ChangeNotifier {
     final path = _customSoundPath ?? _tempPath;
     if (path == null) return;
     await _player.stop();
+    await _player.setAudioContext(const AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        stayAwake: false,
+        contentType: AndroidContentType.music,
+        usageType: AndroidUsageType.alarm,
+        audioFocus: AndroidAudioFocus.gain,
+      ),
+    ));
     await _player.setReleaseMode(ReleaseMode.loop);
     _isPlaying = true;
     notifyListeners();
