@@ -274,25 +274,30 @@ class _TimerWidgetState extends State<TimerWidget> with SingleTickerProviderStat
                     Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(
-                          width: 148,
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            child: Text(
-                              data.hasTarget ? _fmt(_displayRemaining) : '--:--:--',
-                              style: TextStyle(
-                                fontSize: 51,
-                                fontWeight: FontWeight.w600,
-                                fontFamily: 'monospace',
-                                color: running
-                                    ? Colors.white
-                                    : elapsed
-                                        ? Colors.amber.shade300
-                                        : Colors.white60,
-                                letterSpacing: 3,
-                              ),
-                            ),
-                          ),
+                        // Each character in a fixed-width slot so the display
+                        // never shifts or rescales as digit values change.
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: (data.hasTarget ? _fmt(_displayRemaining) : '--:--:--')
+                              .split('')
+                              .map((c) => SizedBox(
+                                    width: 18.5,
+                                    child: Text(
+                                      c,
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 28,
+                                        fontWeight: FontWeight.w600,
+                                        fontFamily: 'monospace',
+                                        color: running
+                                            ? Colors.white
+                                            : elapsed
+                                                ? Colors.amber.shade300
+                                                : Colors.white60,
+                                      ),
+                                    ),
+                                  ))
+                              .toList(),
                         ),
                         const SizedBox(height: 6),
                         _StatusBadge(
