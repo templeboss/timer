@@ -73,6 +73,14 @@ void main() async {
     notifications.cancelAlarm();
   };
 
+  // When another app (e.g. Spotify) takes audio focus via a headset button
+  // press, treat that as the user dismissing the alarm.
+  sound.onFocusLoss = () {
+    releaseOnTop();
+    model.dismissAllElapsed();
+    notifications.cancelAlarm();
+  };
+
   notifications.onDismiss = () {
     sound.stop();
     releaseOnTop();

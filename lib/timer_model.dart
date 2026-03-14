@@ -146,6 +146,11 @@ class SoundService extends ChangeNotifier {
   String? _tempPath;
   String? _customSoundPath;
 
+  /// Called when another app permanently takes audio focus while we are playing
+  /// (e.g. Spotify resuming via a headset button press).  The caller should
+  /// treat this as a user-initiated dismiss of the alarm.
+  VoidCallback? onFocusLoss;
+
   bool get isPlaying => _isPlaying;
   String? get customSoundPath => _customSoundPath;
   String get currentSoundName =>
@@ -153,6 +158,16 @@ class SoundService extends ChangeNotifier {
 
   SoundService() {
     _prepareAsset();
+    _player.onPlayerStateChanged.listen((state) {
+      if (_isPlaying &&
+          (state == PlayerState.paused || state == PlayerState.stopped)) {
+        // Audio focus was taken by another app; treat as dismiss.
+        _isPlaying = false;
+        _player.stop();
+        notifyListeners();
+        onFocusLoss?.call();
+      }
+    });
   }
 
   Future<void> _prepareAsset() async {

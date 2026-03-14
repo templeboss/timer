@@ -22,6 +22,7 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
   String? _soundPath;
   String? _roomCode;
   bool _alarmFiring = false;
+  StreamSubscription<PlayerState>? _focusLossSub;
   // True until the main isolate tells us the app went to background.
   // Prevents re-triggering alarms that already fired while in the foreground.
   bool _appInForeground = true;
@@ -55,6 +56,7 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
     for (final t in _countdowns.values) {
       t.cancel();
     }
+    _focusLossSub?.cancel();
     await _player.stop();
     _player.dispose();
     try {
@@ -259,11 +261,23 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
       await _player.setReleaseMode(ReleaseMode.loop);
       await _player.play(DeviceFileSource(path));
     }
+
+    // When another app steals audio focus (e.g. Spotify via headset button),
+    // audioplayers pauses or stops our player.  Treat that as a dismiss.
+    _focusLossSub?.cancel();
+    _focusLossSub = _player.onPlayerStateChanged.listen((state) {
+      if (_alarmFiring &&
+          (state == PlayerState.paused || state == PlayerState.stopped)) {
+        _dismiss();
+      }
+    });
   }
 
   void _clearAlarm() async {
     if (!_alarmFiring) return;
     _alarmFiring = false;
+    _focusLossSub?.cancel();
+    _focusLossSub = null;
     await _player.stop();
     try {
       await const MethodChannel('timer/notifications').invokeMethod('cancelAlarm');
@@ -271,23 +285,30 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
   }
 
   void _dismiss() {
-    if (!_alarmFiring) return;
-    _clearAlarm();
+    // Always clear if we were the ones playing; don't bail early — the alarm
+    // may have been fired by the main isolate (foreground) in which case
+    // _alarmFiring is false here, but we still need to publish the reset.
+    if (_alarmFiring) _clearAlarm();
 
-    // Publish wasElapsed: false for all elapsed timers.
+    // Publish wasElapsed: false for any elapsed timers in our last known state.
+    // This covers both the background-fired case (_alarmFiring was true) and
+    // the foreground-fired case where the main isolate played the alarm.
     if (_lastState.isNotEmpty) {
+      bool changed = false;
       final updated = _lastState.map((t) {
         if (t['wasElapsed'] as bool? ?? false) {
+          changed = true;
           return <String, dynamic>{...t, 'wasElapsed': false};
         }
         return t;
       }).toList();
-      _publishState(updated);
-      for (final t in updated) {
-        final id = t['id'] as String? ?? '';
-        _wasElapsed[id] = false;
+      if (changed) {
+        _publishState(updated);
+        for (final t in updated) {
+          _wasElapsed[t['id'] as String? ?? ''] = false;
+        }
+        _lastState = updated;
       }
-      _lastState = updated;
     }
 
     FlutterForegroundTask.sendDataToMain(<String, dynamic>{'event': 'dismissed'});
