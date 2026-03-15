@@ -183,6 +183,9 @@ class SoundService extends ChangeNotifier {
   Future<void> play() async {
     final path = _customSoundPath ?? _tempPath;
     if (path == null) return;
+    // Clear the flag before stopping so the onPlayerStateChanged listener
+    // does not treat this re-initialization as an external focus-loss dismiss.
+    _isPlaying = false;
     await _player.stop();
     await _player.setAudioContext(AudioContext(
       android: AudioContextAndroid(

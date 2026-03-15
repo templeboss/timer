@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:mqtt_client/mqtt_client.dart';
@@ -18,23 +16,29 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
   MqttServerClient? _client;
   final Map<String, bool> _wasElapsed = {};
   final Map<String, Timer> _countdowns = {};
-  final _player = AudioPlayer();
-  String? _soundPath;
   String? _roomCode;
   bool _alarmFiring = false;
-  StreamSubscription<PlayerState>? _focusLossSub;
   // True until the main isolate tells us the app went to background.
   // Prevents re-triggering alarms that already fired while in the foreground.
   bool _appInForeground = true;
   List<Map<String, dynamic>> _lastState = [];
+  // Set when a dismiss arrives before MQTT state is loaded (race condition on
+  // service restart). Cleared once we publish the reset to MQTT.
+  bool _dismissPending = false;
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    await _prepareSound();
-
     final prefs = await SharedPreferences.getInstance();
+
+    // Pick up any dismiss that was stored by DismissAlarmReceiver while this
+    // service was not yet running (e.g. killed by battery optimizer).
+    if (prefs.getBool('alarm_dismissed_pending') == true) {
+      _dismissPending = true;
+      await prefs.remove('alarm_dismissed_pending');
+    }
+
     final host = prefs.getString('mqtt_host') ?? '';
     final user = prefs.getString('mqtt_user') ?? '';
     final pass = prefs.getString('mqtt_pass') ?? '';
@@ -56,9 +60,6 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
     for (final t in _countdowns.values) {
       t.cancel();
     }
-    _focusLossSub?.cancel();
-    await _player.stop();
-    _player.dispose();
     try {
       _client?.disconnect();
     } catch (_) {}
@@ -107,12 +108,17 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
               (t) => t['wasElapsed'] as bool? ?? false,
               orElse: () => <String, dynamic>{},
             )['name'] as String?;
-        _clearAlarm();
-        FlutterForegroundTask.sendDataToMain(<String, dynamic>{
-          'event': 'handover_alarm',
-          if (name != null) 'name': name,
-        });
+        _handoverAlarm(name);
       }
+    } else if (event == 'foreground_startup') {
+      // Same as 'foreground' but silently cancels any stale alarm rather than
+      // handing it over — avoids replaying an alarm from a previous session.
+      _appInForeground = true;
+      for (final t in _countdowns.values) {
+        t.cancel();
+      }
+      _countdowns.clear();
+      if (_alarmFiring) _clearAlarm();
     }
   }
 
@@ -154,6 +160,15 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
         final list =
             (jsonDecode(utf8.decode(raw)) as List).cast<Map<String, dynamic>>();
         _lastState = list;
+
+        // If a dismiss arrived while _lastState was empty (service restart
+        // race), publish the MQTT reset now instead of processing normally.
+        if (_dismissPending) {
+          _dismissPending = false;
+          _publishDismissReset();
+          return;
+        }
+
         for (final t in list) {
           _processTimer(t);
         }
@@ -207,12 +222,12 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
     }
 
     if (remaining <= Duration.zero) {
-      if (!_alarmFiring) _fireAndPublish(id, name);
+      if (!_alarmFiring && !_appInForeground) _fireAndPublish(id, name);
       return;
     }
 
     _countdowns[id] = Timer(remaining, () {
-      if (!_alarmFiring) _fireAndPublish(id, name);
+      if (!_alarmFiring && !_appInForeground) _fireAndPublish(id, name);
     });
   }
 
@@ -238,50 +253,32 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
     if (_alarmFiring) return;
     _alarmFiring = true;
 
-    // Show the alarm notification through the same AlarmNotificationHelper
-    // used in the foreground — works because TimerBackgroundEngineListener
-    // registers timer/notifications on this engine too.
+    // Show alarm notification and play sound via the native AlarmNotificationHelper.
+    // The background engine listener passes playSound=true so the native side
+    // plays the bundled WAV directly — no dependency on audioplayers working
+    // in a secondary Flutter engine.
     try {
       await const MethodChannel('timer/notifications')
           .invokeMethod('showAlarm', {'name': name});
     } catch (_) {}
-
-    final path = _soundPath;
-    if (path != null) {
-      await _player.stop();
-      await _player.setAudioContext(AudioContext(
-        android: AudioContextAndroid(
-          isSpeakerphoneOn: true,
-          stayAwake: false,
-          contentType: AndroidContentType.music,
-          usageType: AndroidUsageType.alarm,
-          audioFocus: AndroidAudioFocus.gain,
-        ),
-      ));
-      await _player.setReleaseMode(ReleaseMode.loop);
-      await _player.play(DeviceFileSource(path));
-    }
-
-    // When another app steals audio focus (e.g. Spotify via headset button),
-    // audioplayers pauses or stops our player.  Treat that as a dismiss.
-    _focusLossSub?.cancel();
-    _focusLossSub = _player.onPlayerStateChanged.listen((state) {
-      if (_alarmFiring &&
-          (state == PlayerState.paused || state == PlayerState.stopped)) {
-        _dismiss();
-      }
-    });
   }
 
-  void _clearAlarm() async {
+  Future<void> _clearAlarm() async {
     if (!_alarmFiring) return;
     _alarmFiring = false;
-    _focusLossSub?.cancel();
-    _focusLossSub = null;
-    await _player.stop();
     try {
       await const MethodChannel('timer/notifications').invokeMethod('cancelAlarm');
     } catch (_) {}
+  }
+
+  // Awaits cancelAlarm before notifying the main isolate so the native
+  // mediaSession is fully released before showAlarm re-creates it.
+  Future<void> _handoverAlarm(String? name) async {
+    await _clearAlarm();
+    FlutterForegroundTask.sendDataToMain(<String, dynamic>{
+      'event': 'handover_alarm',
+      if (name != null) 'name': name,
+    });
   }
 
   void _dismiss() {
@@ -290,28 +287,33 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
     // _alarmFiring is false here, but we still need to publish the reset.
     if (_alarmFiring) _clearAlarm();
 
-    // Publish wasElapsed: false for any elapsed timers in our last known state.
-    // This covers both the background-fired case (_alarmFiring was true) and
-    // the foreground-fired case where the main isolate played the alarm.
     if (_lastState.isNotEmpty) {
-      bool changed = false;
-      final updated = _lastState.map((t) {
-        if (t['wasElapsed'] as bool? ?? false) {
-          changed = true;
-          return <String, dynamic>{...t, 'wasElapsed': false};
-        }
-        return t;
-      }).toList();
-      if (changed) {
-        _publishState(updated);
-        for (final t in updated) {
-          _wasElapsed[t['id'] as String? ?? ''] = false;
-        }
-        _lastState = updated;
-      }
+      _publishDismissReset();
+    } else {
+      // MQTT state not received yet (service restart race): defer the reset
+      // until the next MQTT message arrives.
+      _dismissPending = true;
     }
 
     FlutterForegroundTask.sendDataToMain(<String, dynamic>{'event': 'dismissed'});
+  }
+
+  void _publishDismissReset() {
+    bool changed = false;
+    final updated = _lastState.map((t) {
+      if (t['wasElapsed'] as bool? ?? false) {
+        changed = true;
+        return <String, dynamic>{...t, 'wasElapsed': false};
+      }
+      return t;
+    }).toList();
+    if (changed) {
+      _publishState(updated);
+      for (final t in updated) {
+        _wasElapsed[t['id'] as String? ?? ''] = false;
+      }
+      _lastState = updated;
+    }
   }
 
   void _publishState(List<Map<String, dynamic>> state) {
@@ -321,18 +323,5 @@ class BackgroundAlarmTaskHandler extends TaskHandler {
     _client!.publishMessage(
         'wt/$_roomCode/state', MqttQos.atLeastOnce, builder.payload!,
         retain: true);
-  }
-
-  // ── Sound asset ───────────────────────────────────────────────────────────
-
-  Future<void> _prepareSound() async {
-    try {
-      final data = await rootBundle.load('default.wav');
-      final bytes = data.buffer.asUint8List();
-      final tmp =
-          File('${Directory.systemTemp.path}/work_timer_alarm_bg.wav');
-      await tmp.writeAsBytes(bytes, flush: true);
-      _soundPath = tmp.path;
-    } catch (_) {}
   }
 }

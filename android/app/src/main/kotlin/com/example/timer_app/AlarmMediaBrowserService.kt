@@ -10,7 +10,12 @@ class AlarmMediaBrowserService : MediaBrowserServiceCompat() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AlarmNotificationHelper.mediaSession?.let { session ->
-            sessionToken = session.sessionToken
+            // setSessionToken throws if called more than once on the same service instance.
+            // This can happen if show() is invoked while the service is already running
+            // (e.g. a media button intent arrives after alarm start).
+            if (sessionToken == null) {
+                sessionToken = session.sessionToken
+            }
             // Forward media button intents (e.g. from a Bluetooth headset) to
             // the session so onPlay/onPause/onStop callbacks fire.
             MediaButtonReceiver.handleIntent(session, intent)

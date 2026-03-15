@@ -59,8 +59,21 @@ void main() async {
   await notifications.init();
 
   model.setMqtt(mqtt);
-  model.onRemoteAlarm = (timerId) {
+  model.onRemoteAlarm = (timerId) async {
+    // When the app is in the background the foreground service handles the
+    // alarm (native audio + notification). If we also call sound.play() here
+    // it steals audio focus from the native MediaPlayer, causing an immediate
+    // AUDIOFOCUS_LOSS → sendDismiss race. Only act when the app is resumed.
+    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) return;
     if (sound.isPlaying) return; // already playing (e.g. background handover)
+    // If DismissAlarmReceiver ran while the background service wasn't alive,
+    // it leaves this flag so we reset the MQTT state instead of re-firing.
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('alarm_dismissed_pending') == true) {
+      await prefs.remove('alarm_dismissed_pending');
+      model.dismissAllElapsed();
+      return;
+    }
     final name = model.timers.firstWhere((t) => t.id == timerId,
         orElse: () => model.timers.first).name;
     sound.play();
@@ -75,10 +88,13 @@ void main() async {
 
   // When another app (e.g. Spotify) takes audio focus via a headset button
   // press, treat that as the user dismissing the alarm.
+  // Do NOT call notifications.cancelAlarm() here — that would release the
+  // native MediaSession, which can happen mid-flight when the background task
+  // grabs audio focus for native playback, causing show() guard bypass.
+  // The MQTT dismiss propagation via dismissAllElapsed() handles cleanup.
   sound.onFocusLoss = () {
     releaseOnTop();
     model.dismissAllElapsed();
-    notifications.cancelAlarm();
   };
 
   notifications.onDismiss = () {
@@ -186,6 +202,13 @@ class _HomePageState extends State<_HomePage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+    // If the foreground service was already running from a previous app session
+    // with _appInForeground=false, reset it now so stale MQTT retained messages
+    // (wasElapsed:true) don't re-fire the alarm when the app opens.
+    // Using 'foreground_startup' (not 'foreground') to suppress the handover
+    // flow — we don't want to replay a stale alarm from a previous session.
+    FlutterForegroundTask.sendDataToTask(
+        <String, dynamic>{'event': 'foreground_startup'});
   }
 
   @override

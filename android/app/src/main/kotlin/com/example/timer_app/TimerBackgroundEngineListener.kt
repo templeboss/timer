@@ -21,7 +21,7 @@ class TimerBackgroundEngineListener(private val context: Context) :
                 when (call.method) {
                     "showAlarm" -> {
                         val name = call.argument<String>("name") ?: "Timer"
-                        AlarmNotificationHelper.show(context, name)
+                        AlarmNotificationHelper.show(context, name, playSound = true)
                         result.success(null)
                     }
                     "cancelAlarm" -> {
